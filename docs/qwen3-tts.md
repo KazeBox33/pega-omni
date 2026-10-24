@@ -1,10 +1,71 @@
 # Qwen3-TTS engine
 
-`pega-omni qwen3-tts --model-path <Qwen3-TTS-12Hz-1.7B-CustomVoice>` serves the
-12 Hz CustomVoice checkpoint on one GPU. The whole synthesis path (talker,
-code predictor, sampler, codec decoder) is one
+`pega-omni qwen3-tts --model-path <checkpoint>` serves a 12 Hz 1.7B CustomVoice
+or VoiceDesign checkpoint on one GPU. `config.json`'s `tts_model_type` selects
+the prompt layout, independently of the directory or served model name. The
+whole synthesis path (talker, code predictor, sampler, codec decoder) is one
 [kern](https://github.com/pegainfer-project/kern) manifest that
 `omni-qwen3-tts` generates at load and one `kern-runtime` executes.
+
+## VoiceDesign
+
+VoiceDesign uses `Qwen3-TTS-12Hz-1.7B-VoiceDesign` and a non-blank
+`instructions` field to describe the desired voice. The OpenAI SDK requires a
+`voice` argument: any name (or `{"id": "..."}`) is accepted and ignored by this
+checkpoint. `GET /v1/audio/voices` returns `{"voices": []}`. Missing, empty or
+whitespace-only instructions return `400` with `param: "instructions"`.
+CustomVoice still requires a preset speaker and allows optional instructions.
+
+The prompt starts with the instruction's text-only tokens, followed by the
+assistant role and the same dual text / codec tracks as CustomVoice, without
+the preset-speaker position. Language tags and the non-streaming text layout
+are shared. The generated `prefill`, `first` and `decode` programs do not
+change; the VoiceDesign checkpoint supplies their weights.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="unused")
+with client.audio.speech.with_streaming_response.create(
+    model="Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+    voice="alloy",
+    input="Hello from pega-omni.",
+    instructions="A low, slow, middle-aged male voice.",
+    response_format="pcm",
+    extra_body={"extra": {"language": "english"}},
+) as response:
+    for chunk in response.iter_bytes():
+        ...
+```
+
+### Validation procedure
+
+On a supported CUDA GPU, record a VoiceDesign golden using the pinned official
+implementation, then replay it through the existing three-stream test:
+
+```bash
+uv run tools/qwen3_tts/golden.py --model "$DESIGN_MODEL" \
+  --text 'The quick brown fox jumps over the lazy dog.' --language english \
+  --instructions 'A low, slow, middle-aged male voice.' --out design-en.safetensors
+OMNI_QWEN3_TTS_MODEL="$DESIGN_MODEL" OMNI_QWEN3_TTS_GOLDEN="$PWD/design-en.safetensors" \
+  cargo test --release -p omni-qwen3-tts --test golden -- --nocapture
+
+uv run --with openai tools/openai_sdk_check.py \
+  --model Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+  --instructions 'A low, slow, middle-aged male voice.' --extra '{"language":"english"}'
+```
+
+Repeat the golden with Chinese text, `--language chinese` and a Chinese voice
+description. The test compares both text and instruction tokenizer ids,
+prompt embeddings, teacher-forced talker / predictor logits and waveform SNR.
+Also run the CustomVoice golden as a regression check. ASR spot checks of
+served English and Chinese audio and a same-session CustomVoice `omni-bench`
+before / after comparison are required before marking the model verified.
+Reference runs need two separate checkpoint directories; changing the served
+model name does not change the checkpoint family.
+
+VoiceDesign GPU correctness, live SDK compatibility, ASR and performance
+measurements are pending; the measurements below describe CustomVoice only.
 
 ## Programs
 

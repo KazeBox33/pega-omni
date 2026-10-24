@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use omni_qwen3_tts::config::ModelType;
 use omni_qwen3_tts::model::Draw;
 use omni_qwen3_tts::model::GROUPS;
 use omni_qwen3_tts::model::Limits;
@@ -31,6 +32,8 @@ struct Golden {
     text: String,
     speaker: String,
     language: String,
+    instructions: Option<String>,
+    model_type: ModelType,
 }
 
 impl Golden {
@@ -43,6 +46,11 @@ impl Golden {
             text: m["text"].clone(),
             speaker: m["speaker"].clone(),
             language: m["language"].clone(),
+            instructions: m.get("instructions").cloned(),
+            model_type: m
+                .get("tts_model_type")
+                .map(|kind| serde_json::from_value(serde_json::Value::String(kind.clone())).unwrap())
+                .unwrap_or(ModelType::CustomVoice),
         }
     }
 
@@ -86,11 +94,16 @@ fn matches_the_official_run() {
     let limits = Limits { max_batch: 3, max_tokens: 1024, kv_gib: 0.5 };
     let mut model = Model::load(0, &dir, limits).unwrap();
     let config = model.config.clone();
+    assert_eq!(config.model.tts_model_type, golden.model_type, "golden checkpoint family");
 
     let text_ids = model.tokenizer.assistant(&golden.text);
     assert_eq!(text_ids, golden.i32("text_ids"), "tokenizer ids");
     let voice = prompt::voice(&config.model, &golden.speaker, &golden.language).unwrap();
-    let prompt = prompt::assemble(&config.model, voice, &text_ids, None);
+    let instruct = golden.instructions.as_deref().filter(|s| !s.is_empty()).map(|s| model.tokenizer.instruct(s));
+    if golden.instructions.is_some() {
+        assert_eq!(instruct.as_deref().unwrap_or_default(), golden.i32("instruct_ids"), "instruction tokenizer ids");
+    }
+    let prompt = prompt::assemble(&config.model, voice, &text_ids, instruct.as_deref());
     let (embed_shape, embeds) = golden.f32("prefill_embeds");
     assert_eq!(prompt.len(), embed_shape[0], "prompt length");
 
