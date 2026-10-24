@@ -27,7 +27,7 @@ enum Command {
     SimLive(SimLiveArgs),
     /// Serve the CPU-only simulated image engine.
     SimImage(SimImageArgs),
-    /// Serve Qwen3-TTS (12Hz CustomVoice) on one GPU.
+    /// Serve Qwen3-TTS (12Hz CustomVoice or VoiceDesign) on one GPU.
     #[cfg(feature = "qwen3-tts")]
     Qwen3Tts(Qwen3TtsArgs),
     /// Serve PersonaPlex-7B, full duplex, on one GPU.
