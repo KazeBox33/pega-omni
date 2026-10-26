@@ -141,6 +141,42 @@ allocates buffers at their var bounds, hands out KV pages and state slots, and
 captures `first` and `decode` per bucket. Weight layout transforms (fused QKV
 and gate/up, conv taps, folded scales) happen once at load, on the host.
 
+## Optional GEMM algorithm profiles
+
+The default uses cuBLASLt's heuristic. `--gemm-algos <json>` selects an
+algorithm for each listed `(m=1, n, k)` shape, where
+`y[m, n] = x[m, k] · w[n, k]ᵀ`. The profile is sparse: omitted shapes and
+calls with two or more rows keep the heuristic. Factor-two predictor calls,
+codec im2col row multiples and accumulating codec GEMMs also keep their
+original operations. The selected algorithm applies across regular talker,
+predictor and codec GEMMs with that exact shape.
+
+```bash
+target/release/pega-omni qwen3-tts --model-path "$DESIGN_MODEL" \
+  --gemm-algos tools/qwen3_tts/profiles/rtx-5090-cublaslt-130101-m1.json
+```
+
+The included profile targets an NVIDIA GeForce RTX 5090 with cuBLASLt
+130101. Loading rejects a different GPU name or cuBLASLt version. Numerical
+validation uses the existing golden tolerances; an alternative algorithm
+may round differently even when a random-input probe matched exactly.
+Profile `device` and `gemms` fields are required. Additional measurement
+annotations are accepted, so the reproducible probe's timing metadata can
+remain alongside `m`, `n`, `k` and `algo`. The four included pins have passed
+English, Chinese, long continuous VoiceDesign and CustomVoice golden checks.
+Their kernel timings alone do not establish an end-to-end speedup.
+
+The engine passes the path explicitly to `Model::load`; serving does not
+read a GEMM environment variable. For a golden replay only, set
+`OMNI_QWEN3_TTS_GEMM_ALGOS` to the same path:
+
+```bash
+OMNI_QWEN3_TTS_MODEL="$DESIGN_MODEL" \
+OMNI_QWEN3_TTS_GOLDEN="$PWD/design-en.safetensors" \
+OMNI_QWEN3_TTS_GEMM_ALGOS="$PWD/tools/qwen3_tts/profiles/rtx-5090-cublaslt-130101-m1.json" \
+  cargo test --release -p omni-qwen3-tts --test golden -- --nocapture
+```
+
 ## Correctness
 
 `tools/qwen3_tts/golden.py` records the official implementation's run (qwen-tts

@@ -58,11 +58,20 @@ pub struct Options {
     pub kv_gib: f64,
     pub first_chunk_frames: usize,
     pub chunk_frames: usize,
+    /// Optional device-bound M=1 GEMM algorithm profile; heuristic without.
+    pub gemm_algos: Option<PathBuf>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { max_batch: 64, max_step_tokens: 8192, kv_gib: 16.0, first_chunk_frames: 2, chunk_frames: 8 }
+        Self {
+            max_batch: 64,
+            max_step_tokens: 8192,
+            kv_gib: 16.0,
+            first_chunk_frames: 2,
+            chunk_frames: 8,
+            gemm_algos: None,
+        }
     }
 }
 
@@ -292,7 +301,8 @@ pub fn start(
     let thread = std::thread::Builder::new().name("omni-qwen3-tts".into()).spawn(move || {
         let loaded = (|| {
             let limits = Limits { max_batch: opts.max_batch, max_tokens: opts.max_step_tokens, kv_gib: opts.kv_gib };
-            let model = Model::load(device, &dir, limits).with_context(|| format!("load {}", dir.display()))?;
+            let model = Model::load(device, &dir, limits, opts.gemm_algos.as_deref())
+                .with_context(|| format!("load {}", dir.display()))?;
             let (handle, inbox) = omni_engine::channel(info(&model.config, &name, max_input_chars), queue);
             anyhow::Ok((handle, inbox, Engine::new(model, opts)))
         })();
