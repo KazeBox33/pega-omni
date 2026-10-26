@@ -149,6 +149,13 @@ compares against it through `prefill`, `first` and `decode`, the recorded
 codes forced in place of the draws, three streams at once (two in lockstep,
 one joining 7 steps late, so it is prefilled next to running rows):
 
+The recorder calls the official codec decoder continuously. Its public
+`speech_tokenizer.decode` wrapper instead resets the decoder every 300 frames
+with only 25 frames of left context. Beyond that boundary it is a different
+reference for this engine, which preserves each causal layer's history. The
+golden metadata records `codec_decode=continuous_decoder_forward`; older
+recordings longer than 300 frames must be regenerated with this recorder.
+
 | | ours vs official |
 |---|---|
 | tokenizer ids | identical |
