@@ -23,6 +23,10 @@ in full, with a SHA256 covering the exact ordered inputs and generation seeds.
 --workload-jsonl accepts the same fields with optional id; task_type, when
 present, must be VoiceDesign. Other generation overrides are rejected so an
 official dataset cannot silently change the comparison's sampling or limits.
+Each row records pega-omni's frame cap: min(50 + 6 * Unicode characters,
+checkpoint max_new_tokens). vLLM receives the same max_new_tokens explicitly.
+--checkpoint-max-new-tokens defaults to the verified 1.7B checkpoint's 8192;
+set it to the loaded checkpoint's generation_config.json value on both runs.
 
 Raw output is assumed to be mono 24 kHz signed 16-bit little-endian PCM. HTTP
 reads are transport chunks, not codec frames. TTFB is first nonempty audio, not
@@ -125,9 +129,11 @@ def read_jsonl(path):
     return cases
 
 
-def workload(cases, count, seed):
+def workload(cases, count, seed, checkpoint_cap=8192):
     if not isinstance(cases, list) or not cases:
         raise ValueError("workload must be a nonempty JSON array")
+    if not isinstance(checkpoint_cap, int) or checkpoint_cap < 1:
+        raise ValueError("checkpoint generation cap must be a positive integer")
     ids = set()
     for case in cases:
         if not isinstance(case, dict) or set(case) != {
@@ -147,7 +153,14 @@ def workload(cases, count, seed):
             raise ValueError("use unique case ids and language english or chinese")
         ids.add(case["id"])
     rows = [
-        {**cases[i % len(cases)], "generation_seed": seed + i} for i in range(count)
+        {
+            **cases[i % len(cases)],
+            "generation_seed": seed + i,
+            "expected_max_new_tokens": min(
+                50 + 6 * len(cases[i % len(cases)]["input"]), checkpoint_cap
+            ),
+        }
+        for i in range(count)
     ]
     random.Random(seed).shuffle(rows)
     return [{**row, "request_id": i} for i, row in enumerate(rows)]
@@ -174,6 +187,7 @@ def request_body(backend, model, row, initial_codec_chunk_frames=None):
             language=row["language"].capitalize(),
             seed=row["generation_seed"],
             non_streaming_mode=True,
+            max_new_tokens=row["expected_max_new_tokens"],
         )
         if initial_codec_chunk_frames is not None:
             body["initial_codec_chunk_frames"] = initial_codec_chunk_frames
@@ -272,6 +286,7 @@ async def fire(
         "request_id": row["request_id"],
         "case_id": row["id"],
         "language": row["language"],
+        "expected_max_new_tokens": row["expected_max_new_tokens"],
         "request_body": request_body(backend, model, row, initial_codec_chunk_frames),
         "started_at_s": start - phase_start,
         "ok": False,
@@ -421,6 +436,12 @@ def parse_args():
     )
     ap.add_argument("--timeout", type=float, default=300)
     ap.add_argument(
+        "--checkpoint-max-new-tokens",
+        type=int,
+        default=8192,
+        help="loaded checkpoint generation_config.json max_new_tokens, for matched caps",
+    )
+    ap.add_argument(
         "--min-audio-seconds",
         type=float,
         default=0,
@@ -470,6 +491,8 @@ def parse_args():
         )
     if args.seed + args.num_requests + args.warmup >= 2**63:
         ap.error("generation seeds must fit signed 64-bit integers")
+    if not 1 <= args.checkpoint_max_new_tokens < 2**63:
+        ap.error("checkpoint-max-new-tokens must be a positive signed 64-bit integer")
     if (
         args.vllm_initial_codec_chunk_frames is not None
         and args.vllm_initial_codec_chunk_frames < 1
@@ -513,7 +536,7 @@ def main():
     metadata = json.loads(args.metadata_file.read_text()) if args.metadata_file else {}
     if not isinstance(metadata, dict):
         raise TypeError("metadata-file must contain a JSON object")
-    rows = workload(cases, args.num_requests, args.seed)
+    rows = workload(cases, args.num_requests, args.seed, args.checkpoint_max_new_tokens)
     report = {
         "schema_version": 1,
         "created_at": datetime.now(UTC).isoformat(),
@@ -533,7 +556,12 @@ def main():
         "metadata": metadata,
         "workload": rows,
         "workload_sha256": digest(rows),
-        "warmup_workload": workload(cases, args.warmup, args.seed + args.num_requests),
+        "warmup_workload": workload(
+            cases,
+            args.warmup,
+            args.seed + args.num_requests,
+            args.checkpoint_max_new_tokens,
+        ),
         "planned_request_bodies": [
             request_body(
                 args.backend, args.model, row, args.vllm_initial_codec_chunk_frames

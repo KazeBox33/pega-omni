@@ -66,7 +66,9 @@ class MetricsTest(unittest.TestCase):
             self.assertNotIn("extra", vllm)
             self.assertNotIn("task_type", pega)
             self.assertNotIn("non_streaming_mode", pega)
+            self.assertNotIn("max_new_tokens", pega)
             self.assertTrue(vllm["non_streaming_mode"])
+            self.assertEqual(vllm["max_new_tokens"], row["expected_max_new_tokens"])
             self.assertEqual(vllm["task_type"], "VoiceDesign")
             self.assertEqual(
                 bench.request_body("vllm-omni", "same-checkpoint", row, 1)[
@@ -75,6 +77,28 @@ class MetricsTest(unittest.TestCase):
                 1,
             )
             self.assertNotIn("initial_codec_chunk_frames", vllm)
+
+    def test_generation_cap_counts_unicode_characters_and_checkpoint_limit(self):
+        case = {
+            "id": "unicode",
+            "input": "你好，世界。😀",
+            "instructions": "自然清晰的普通话男声。",
+            "language": "chinese",
+        }
+        row = bench.workload([case], 1, 42)[0]
+        self.assertEqual(row["expected_max_new_tokens"], 50 + 6 * 7)
+        self.assertNotEqual(
+            row["expected_max_new_tokens"], 50 + 6 * len(case["input"].encode())
+        )
+        capped = bench.workload([case], 1, 42, checkpoint_cap=64)[0]
+        self.assertEqual(capped["expected_max_new_tokens"], 64)
+        self.assertNotEqual(bench.digest([row]), bench.digest([capped]))
+        self.assertEqual(
+            bench.request_body("vllm-omni", "design", capped)["max_new_tokens"],
+            64,
+        )
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            bench.workload([case], 1, 42, checkpoint_cap=0)
 
     def test_jsonl_requires_explicit_normalization_of_overrides(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -152,6 +176,9 @@ class StreamingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.peak, 2)
         self.assertGreater(wall, 0.02)
         for row in records:
+            self.assertEqual(
+                row["expected_max_new_tokens"], rows[0]["expected_max_new_tokens"]
+            )
             self.assertEqual(row["audio_bytes"], 4800)
             self.assertEqual(len(row["_pcm"]), 4800)
             self.assertGreaterEqual(row["ttfb_s"], 0.009)
