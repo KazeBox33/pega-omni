@@ -114,10 +114,16 @@ fn matches_the_official_run() {
     let t = &config.model.talker_config;
     let (h, vocab, p_vocab) = (t.stack.hidden_size, t.stack.vocab_size, t.code_predictor_config.vocab_size);
     let spf = config.samples_per_frame;
+    assert_eq!(talker_logits.len(), (n + 1) * vocab, "reference must include the terminal EOS-step logits");
+    assert_eq!(predictor_logits.len(), n * (GROUPS - 1) * p_vocab, "reference predictor logits per frame");
 
     let mut seqs: Vec<Seq> = (0..3).map(|_| model.open(prompt.len(), n + 1).unwrap().unwrap()).collect();
     let starts = [0, 0, LAG];
-    let draw = |t: usize| Draw { uniforms: [0.5; GROUPS], force: frames.get(t).copied() };
+    // The reference sampled EOS with its own RNG. Force that final decision too;
+    // its raw talker logits are still compared below, independently of sampling.
+    let mut end = [0; GROUPS];
+    end[0] = config.model.talker_config.codec_eos_token_id;
+    let draw = |t: usize| Draw { uniforms: [0.5; GROUPS], force: Some(frames.get(t).copied().unwrap_or(end)) };
     let mut ours_talker = Vec::new();
     let mut ours_predictor = Vec::new();
     let mut wav = vec![Vec::new(); 3];
