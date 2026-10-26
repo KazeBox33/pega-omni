@@ -64,8 +64,24 @@ before / after comparison are required before marking the model verified.
 Reference runs need two separate checkpoint directories; changing the served
 model name does not change the checkpoint family.
 
-VoiceDesign GPU correctness, live SDK compatibility, ASR and performance
-measurements are pending; the measurements below describe CustomVoice only.
+On 2026-10-27, the CUDA 13 build on one RTX 5090 passed the original
+three-stream official-reference replays with default GEMMs. The optional M=1
+profile also passed single-stream and three-stream replays for every case
+below. All existing tokenizer, embedding, logit and 30 dB waveform gates are
+unchanged. The table shows the profiled build's waveform SNR against the
+official continuous codec.
+
+| Checkpoint / case | Frames | Single stream, dB | Worst of three streams, dB |
+|---|---:|---:|---:|
+| VoiceDesign English | 73 | 34.36 | 33.71 |
+| VoiceDesign Chinese | 93 | 32.37 | 32.42 |
+| VoiceDesign long English | 366 | 33.14 | 33.04 |
+| CustomVoice English (`ryan`) | 75 | 36.02 | 36.09 |
+
+The official OpenAI Python SDK 3.37.0 checker also passed against the real
+VoiceDesign GPU server. Free-running audio and performance results are recorded
+in [bench.md](bench.md#qwen3-tts-voicedesign-on-rtx-5090). The historical
+performance tables further below describe CustomVoice on a GB300.
 
 ## Programs
 
@@ -182,8 +198,9 @@ OMNI_QWEN3_TTS_GEMM_ALGOS="$PWD/tools/qwen3_tts/profiles/rtx-5090-cublaslt-13010
 `tools/qwen3_tts/golden.py` records the official implementation's run (qwen-tts
 at 022e286b, torch 2.11, bf16) and `crates/omni-qwen3-tts/tests/golden.rs`
 compares against it through `prefill`, `first` and `decode`, the recorded
-codes forced in place of the draws, three streams at once (two in lockstep,
-one joining 7 steps late, so it is prefilled next to running rows):
+codes forced in place of the draws. It first replays a single stream, then
+three streams at once (two in lockstep, one joining 7 steps late, so it is
+prefilled next to running rows).
 
 The recorder calls the official codec decoder continuously. Its public
 `speech_tokenizer.decode` wrapper instead resets the decoder every 300 frames
@@ -191,6 +208,8 @@ with only 25 frames of left context. Beyond that boundary it is a different
 reference for this engine, which preserves each causal layer's history. The
 golden metadata records `codec_decode=continuous_decoder_forward`; older
 recordings longer than 300 frames must be regenerated with this recorder.
+
+Earlier CustomVoice results on a GB300:
 
 | | ours vs official |
 |---|---|

@@ -1,18 +1,16 @@
 # VoiceDesign correctness and performance validation
 
-This is a runbook, not a performance result. No VoiceDesign GPU correctness,
-audio quality or speedup is established yet. The CustomVoice measurements in
-`qwen3-tts-vs-vllm-omni.md` are a different checkpoint and cannot stand in for
-this comparison.
+This runbook describes the matched VoiceDesign comparison. The completed
+RTX 5090 measurements and numerical checks are recorded in
+[bench.md](bench.md#qwen3-tts-voicedesign-on-rtx-5090). The CustomVoice
+measurements in `qwen3-tts-vs-vllm-omni.md` use a different checkpoint.
 
-## Initial device check (2026-10-26)
+## Verified device (2026-10-27)
 
-The first remote container exposed one RTX 5090 (32607 MiB, 575 W power
-limit), a 120 GiB memory limit and a 25-core CPU quota. The host driver was
-570.124.04; `cuDriverGetVersion` returned 12080 and nvcc was 12.8.93.
-Both `codec.cu` and `talker.cu` compiled to `sm_120` cubins. This proves
-compilation only, not execution or numerical correctness. SSH became
-unavailable during dependency setup.
+The measured container exposes one RTX 5090 (32607 MiB, 575 W power limit),
+a 90 GiB memory limit and a 25-core CPU quota. The host driver is 595.71.05
+and nvcc is 13.0.88. Both `codec.cu` and `talker.cu` are compiled to `sm_120`.
+The complete CUDA build, workspace checks and real-GPU golden replays pass.
 
 The current repository pins CUDA 13 bindings and the official-reference
 recorder uses a CUDA 13 PyTorch build. Use a host driver compatible with
@@ -29,8 +27,12 @@ Set `OMNI_CUDA_ARCH=120`; the build default is GB300's `103a`.
    run is not evidence that GPU golden tests executed.
 3. Record and replay official VoiceDesign goldens in English and Chinese
    as described in `qwen3-tts.md`. Include a longer utterance spanning more
-   than 150 frames to exercise codec history wraparound. Also replay a
-   CustomVoice golden to check the existing checkpoint family.
+   than 300 frames to exercise codec history wraparound and the reference
+   wrapper's chunk boundary. Use the recorder's continuous official decoder,
+   which matches the stateful Rust codec; the public Python wrapper instead
+   resets context every 300 frames. Also replay a CustomVoice golden to check
+   the existing checkpoint family. Each test checks a single stream and then
+   three interleaved streams sequentially.
 4. Run `tools/openai_sdk_check.py` against the real VoiceDesign server.
    Generate free-running English and Chinese audio, save it, transcribe it
    for content checks and listen for noise, truncation and instruction
@@ -53,6 +55,8 @@ Use the same checkpoint and ordered inputs, instructions and languages.
 Keep generation settings and maximum output budgets aligned. Equal numeric
 seeds do not make different implementations' random number streams equal.
 Do not use shorter or prematurely terminated output to claim a speedup.
+The client sends vLLM the same per-request frame cap that pega applies:
+`min(50 + 6 * Unicode_codepoints(input), checkpoint.max_new_tokens)`.
 
 `tools/qwen3_tts/bench_voicedesign.py` records the complete workload and its
 digest, request bodies, audio durations, errors and transport arrival times.
@@ -100,7 +104,12 @@ latency. Preserve the original workload and record any adaptation.
   MPS experiment must use a private daemon and leave unrelated services alone.
 - Run one engine at a time on an otherwise idle GPU. Pin the server and
   client to separate physical CPU cores within the container's CPU quota.
-  Exclude download, JIT compilation, graph capture and warmup from timing.
+  Exclude setup, initial compilation, readiness waiting and warmup requests
+  from timing. Record whether later graph captures occur during measurement:
+  pega creates graphs lazily, and warmups do not guarantee coverage of every
+  admission/batch transition. Those later captures remain in request timings.
+  Startup is process launch to `/health`; compiled caches are retained, and
+  readiness does not imply every lazy graph has been captured.
 - Compare equivalent chunk schedules first (for example 1+25); report
   pega's 2+8 schedule separately. Chunk policy changes latency and continuity.
 - Measure concurrency 1, 4, 8 and 16 as memory permits. Treat larger
