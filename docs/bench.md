@@ -525,3 +525,70 @@ The result record is gzip-compressed JSON; inspect it with
 `gzip -dc docs/benchmarks/voicedesign-rtx5090-20261027.json.gz` from the repository root.
 
 ![Matched VoiceDesign throughput and first-audio latency](../assets/qwen3-tts-voicedesign-rtx5090.png)
+
+## Extended single-row GEMM profile
+
+Run-level data, frozen profiles, numerical/quality audits and source hashes
+are in [the extension record](benchmarks/voicedesign-rtx5090-extension-20261027.json.gz).
+
+A second same-session `omni-bench` study on the same RTX 5090 compares the
+original four-entry profile with nine entries, using the same production
+binary (`0dc08989...523891`). Both arms explicitly load their profile and use
+batch 16, step-token budget 2,048, KV 4 GiB and fixed 1+25 chunks. The 30 official
+English texts receive one identical voice instruction and generation seed 42
+per request. There are 96 requests per point and three alternating pairs;
+all 1,152 measured requests succeed. This comparison has a uniform instruction
+and a different baseline from the cross-engine studies above.
+
+| c | Original 4 audio s/s | Extended 9 audio s/s | Paired throughput ratio [min,max] | Paired p50 RTF ratio | Mean audio-duration ratio |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 13.400 | 13.951 | 1.04110 [1.03934,1.04178] | 0.960 | 1.01385 |
+| 4 | 37.431 | 37.129 | 0.99343 [0.99193,1.00335] | 1.000 | 1.01073 |
+
+The c1 serving throughput gain is present in every observed pair. c4 is
+approximately flat with a median -0.66% and range -0.81% to +0.34%; there is no
+measured c4 improvement. Free-running output lengths differ: c1 per-case mean
+duration ratios span 0.766–1.235. Actual audio seconds and RTF normalize for
+length, but this serving study does not fix generated frames.
+
+An independent public-`Model`-API replay fixes the official 73-frame English
+and 366-frame continuous codes, their final EOS calls and audio bytes. Three
+profiles run in rotating order over three rounds after two complete warmups
+per profile/case/mode. Loads, graph warmups, hashing and scoring are outside
+timing; measured replay includes prefill, decode, D2H and the engine's s16 PCM
+conversion. All 36 timed replays complete and reproduce the same per-stream
+PCM hashes across the profiles.
+
+| Forced golden | Streams | Original 4 wall ms | Extended 9 wall ms | Paired speed ratio |
+|---|---:|---:|---:|---:|
+| English, 73 frames | 1 | 431.259 | 411.271 | 1.04860 [1.04790,1.04939] |
+| Continuous, 366 frames | 1 | 2237.509 | 2138.675 | 1.04621 [1.04570,1.04678] |
+| English, 73 frames | 3 | 614.809 | 613.587 | 1.00199 |
+| Continuous, 366 frames | 3 | 2974.693 | 2976.360 | 0.99944 |
+
+Wall times are means; paired speed ratios are geometric means of
+original/candidate time over three rounds. Ranges describe the observed
+rounds. This fixed-work result supports a single-stream runtime improvement;
+three streams are flat. Its small equal pools and three simultaneously
+resident models differ from serving admission and HTTP. The sampled 18,240 MiB
+device peak belongs to those three resident models and is not production
+single-instance memory.
+
+Both candidate extensions pass all four existing configured golden cases,
+each single-stream and interleaved three-stream, with unchanged embedding,
+logit and >30 dB waveform gates. To check the changed free-generation lengths,
+both profiles independently capture all 30 exact serving texts with the same
+uniform instruction and per-request seed 42. Every case reproduces its formal
+c1 duration within 1e-8 s. Blind Whisper-small transcription yields 7/352 word
+errors for each profile, with different flagged cases; the two cases with the
+largest relative length changes transcribe without errors in both arms. This observes
+no aggregate ASR regression on these inputs. Perceptual voice quality and
+instruction adherence remain unmeasured.
+
+The opt-in
+`tools/qwen3_tts/profiles/rtx-5090-cublaslt-130101-m1-extended.json` preserves
+the original four algorithms and adds five shapes. Its numeric device and
+algorithm payload equals the measured nine-entry file; only descriptive
+annotations were updated after validation. The original four-entry file
+stays unchanged. Runtime source, default heuristic selection and M>=2
+operations are unchanged by this profile extension.

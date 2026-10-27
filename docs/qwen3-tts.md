@@ -169,7 +169,7 @@ predictor and codec GEMMs with that exact shape.
 
 ```bash
 target/release/pega-omni qwen3-tts --model-path "$DESIGN_MODEL" \
-  --gemm-algos tools/qwen3_tts/profiles/rtx-5090-cublaslt-130101-m1.json
+  --gemm-algos tools/qwen3_tts/profiles/rtx-5090-cublaslt-130101-m1-extended.json
 ```
 
 The included profile targets an NVIDIA GeForce RTX 5090 with cuBLASLt
@@ -178,9 +178,18 @@ validation uses the existing golden tolerances; an alternative algorithm
 may round differently even when a random-input probe matched exactly.
 Profile `device` and `gemms` fields are required. Additional measurement
 annotations are accepted, so the reproducible probe's timing metadata can
-remain alongside `m`, `n`, `k` and `algo`. The four included pins have passed
-English, Chinese, long continuous VoiceDesign and CustomVoice golden checks.
-Their kernel timings alone do not establish an end-to-end speedup.
+remain alongside `m`, `n`, `k` and `algo`. Both the original four-entry file
+and the extended nine-entry file pass English, Chinese, long continuous
+VoiceDesign and CustomVoice golden checks. The original file is retained
+byte-for-byte for reproduction.
+
+The nine-entry profile improves same-binary c1 actual-audio throughput by
+4.11% over the original four entries in three observed pairs. c4 is
+approximately flat (median -0.66%). Fixed-code single-stream replays also
+improve by 1.046–1.049x, with equal frame counts and PCM hashes across the
+profiles; three-stream replays are flat. See the separate serving, fixed-work
+and free-generation quality evidence in
+[the measurement record](bench.md#extended-single-row-gemm-profile).
 
 The engine passes the path explicitly to `Model::load`; serving does not
 read a GEMM environment variable. For a golden replay only, set
@@ -189,7 +198,7 @@ read a GEMM environment variable. For a golden replay only, set
 ```bash
 OMNI_QWEN3_TTS_MODEL="$DESIGN_MODEL" \
 OMNI_QWEN3_TTS_GOLDEN="$PWD/design-en.safetensors" \
-OMNI_QWEN3_TTS_GEMM_ALGOS="$PWD/tools/qwen3_tts/profiles/rtx-5090-cublaslt-130101-m1.json" \
+OMNI_QWEN3_TTS_GEMM_ALGOS="$PWD/tools/qwen3_tts/profiles/rtx-5090-cublaslt-130101-m1-extended.json" \
   cargo test --release -p omni-qwen3-tts --test golden -- --nocapture
 ```
 
