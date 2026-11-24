@@ -37,15 +37,18 @@ use omni_engine::Event;
 use omni_engine::Extra;
 use omni_engine::Finish;
 use omni_engine::Inbox;
+use omni_engine::ReferenceAudioInfo;
 use omni_engine::Speech;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub mod image;
 
-/// The sim's timing and chunking model.
+/// The sim's speech capabilities, timing and chunking model.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
     pub sample_rate: u32,
+    /// Accept reference conditioning in place of preset voices.
+    pub reference_audio: bool,
     /// Codec frames per second of audio.
     pub frame_rate: f64,
     /// Frames generated per input character at speed 1.0.
@@ -66,6 +69,7 @@ impl Default for Profile {
     fn default() -> Self {
         Self {
             sample_rate: 24_000,
+            reference_audio: false,
             frame_rate: 12.5,
             frames_per_char: 0.8,
             max_frames: 4096,
@@ -121,10 +125,20 @@ impl Profile {
         EngineInfo {
             model: model.into(),
             sample_rate: self.sample_rate,
-            voices: VOICES.iter().map(|v| v.to_string()).collect(),
+            voices: if self.reference_audio {
+                Default::default()
+            } else {
+                VOICES.iter().map(|v| v.to_string()).collect()
+            },
             extra: [("frames".to_string(), Extra::Integer(1..=self.max_frames as i64))].into(),
             speeds: 0.25..=4.0,
             max_input_chars: 4096,
+            reference_audio: self.reference_audio.then_some(ReferenceAudioInfo {
+                sample_rate: 24_000,
+                duration_seconds: 1..=30,
+                audio_only: true,
+                with_transcript: true,
+            }),
         }
     }
 }

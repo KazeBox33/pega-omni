@@ -132,6 +132,36 @@ differs from OpenAI, it says so instead of guessing:
   url`, other `output_format`s and `stream: true` are refused by name, and
   `seed` goes in `extra`. `pega-omni sim-image` serves an image simulator.
 
+### Reference audio
+
+Speech engines can opt into three top-level request fields:
+
+| Field | Accepted value |
+|---|---|
+| `ref_audio` | Required `data:audio/wav;base64,...` URI with standard Base64 and a complete PCM16 WAV |
+| `x_vector_only_mode` | Boolean. `true` uses only the audio. `false` or omission uses both audio and transcript |
+| `ref_text` | Nonblank transcript for audio and transcript mode. Ignored in audio-only mode |
+
+`null` is treated like omission for these fields.
+
+WAV sources may have one or two channels at 16, 24, 44.1, or 48 kHz. The
+server checks clip duration at the source rate, mixes to mono, and resamples
+to the engine's reference input rate. `voice` is still required and can be a
+placeholder when the server lists no preset voices. The reference route
+allows up to 60 seconds to read a request body of at most 8 MiB. A read
+timeout returns `408`. Once the body arrives, at most four requests can
+be prepared on blocking workers. A full conversion pool returns `429`.
+
+`pega-omni sim --reference-audio` accepts both modes with 1–30 second clips
+and a 24 kHz reference input rate. The SDK check sends the reference fields
+in `extra_body` and exercises both modes against the running server:
+
+```bash
+pega-omni sim --reference-audio --listen 127.0.0.1:8000
+# In another terminal:
+uv run --with openai tools/openai_sdk_check.py --reference-audio
+```
+
 ## Layout
 
 | Crate | |

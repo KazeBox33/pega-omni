@@ -69,6 +69,9 @@ struct SimArgs {
     serve: Serve,
     #[arg(long, default_value = "pega-omni-sim")]
     model: String,
+    /// Accept reference audio and transcripts in place of preset voices.
+    #[arg(long)]
+    reference_audio: bool,
     #[arg(long, default_value_t = 24_000)]
     sample_rate: u32,
     #[arg(long, default_value_t = 12.5)]
@@ -384,6 +387,7 @@ impl SimArgs {
     fn profile(&self) -> anyhow::Result<Profile> {
         Profile {
             sample_rate: self.sample_rate,
+            reference_audio: self.reference_audio,
             frame_rate: self.frame_rate,
             frames_per_char: self.frames_per_char,
             max_frames: self.max_frames,
