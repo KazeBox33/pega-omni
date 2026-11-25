@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, ci/voicedesign-0de9739]
   pull_request:
 
 concurrency:
