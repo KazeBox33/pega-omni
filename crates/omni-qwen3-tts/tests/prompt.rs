@@ -90,3 +90,22 @@ fn voice_design_ignores_voice_names_but_checks_languages() {
     }
     assert!(prompt::voice(&model, "alloy", "not-a-language").is_err());
 }
+
+#[test]
+fn step_budget_counts_both_tracks_as_one_position_and_names_the_field_that_overflows() {
+    let model = model("voice_design");
+    for language in ["auto", "english"] {
+        let voice = prompt::voice(&model, "alloy", language).unwrap();
+        let base = prompt::assemble(&model, voice, TEXT, None);
+        let full = prompt::assemble(&model, voice, TEXT, Some(INSTRUCT));
+        let checked = |limit| prompt::assemble_with_budget(&model, voice, TEXT, Some(INSTRUCT), limit);
+
+        assert_eq!(checked(full.len()).unwrap(), full);
+        for budget in [base.len(), full.len() - 1] {
+            let error = checked(budget).unwrap_err();
+            assert_eq!(error.param, "instructions");
+            assert_eq!(error.message, format!("{} prompt tokens exceed the per-step limit of {budget}", full.len()));
+        }
+        assert_eq!(checked(base.len() - 1).unwrap_err().param, "input");
+    }
+}

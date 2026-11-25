@@ -96,7 +96,7 @@ def main() -> None:
         assert_bad_request(client, args.model, voice, "ref_audio", malformed)
     elif args.instructions is not None:
         assert_bad_request(client, args.model, voice, "instructions", extra)
-        for description in ("", " \t\n", "慢" * 513):
+        for description in (None, "", " \t\n", "慢" * 513, True, 42, ["slow"], {"style": "slow"}):
             assert_bad_request(client, args.model, voice, "instructions", {**extra, "instructions": description})
     else:
         assert_bad_request(client, args.model, "nobody", "voice")

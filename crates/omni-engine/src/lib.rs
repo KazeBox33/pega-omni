@@ -37,6 +37,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::oneshot;
 
 pub mod image;
 
@@ -304,6 +305,8 @@ pub enum Finish {
 pub struct Submission {
     pub speech: Speech,
     pub sink: UnboundedSender<Event>,
+    /// Reply after preparing the request, before putting it on the waiting list.
+    pub admission: Option<oneshot::Sender<Result<(), Invalid>>>,
 }
 
 /// Engine occupancy, written by the engine and read by the front end's metrics.
@@ -321,6 +324,14 @@ pub enum Rejected {
     Stopped,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum AdmissionError {
+    #[error(transparent)]
+    Queue(#[from] Rejected),
+    #[error(transparent)]
+    Invalid(#[from] Invalid),
+}
+
 /// The front end's side of the channel.
 #[derive(Clone)]
 pub struct Handle {
@@ -328,6 +339,7 @@ pub struct Handle {
     pub load: Arc<Load>,
     tx: mpsc::SyncSender<Submission>,
     next_id: Arc<AtomicU64>,
+    confirm_admission: bool,
 }
 
 /// The engine's side of the channel.
@@ -342,16 +354,48 @@ pub fn channel(info: EngineInfo, queue: usize) -> (Handle, Inbox) {
     let info = Arc::new(info);
     let load = Arc::new(Load::default());
     let (tx, rx) = mpsc::sync_channel(queue);
-    let handle = Handle { info: info.clone(), load: load.clone(), tx, next_id: Arc::new(AtomicU64::new(1)) };
+    let handle = Handle {
+        info: info.clone(),
+        load: load.clone(),
+        tx,
+        next_id: Arc::new(AtomicU64::new(1)),
+        confirm_admission: false,
+    };
     (handle, Inbox { info, load, rx })
 }
 
 impl Handle {
+    /// The engine can discover invalid fields while preparing a prompt. Let it
+    /// return those errors before the caller commits to an audio response.
+    pub fn with_admission_check(mut self) -> Self {
+        self.confirm_admission = true;
+        self
+    }
+
+    /// Returns the audio stream once the engine's optional prompt check succeeds.
+    pub async fn admit(&self, speech: Speech) -> Result<UnboundedReceiver<Event>, AdmissionError> {
+        if !self.confirm_admission {
+            return Ok(self.submit(speech)?);
+        }
+        let (reply, result) = oneshot::channel();
+        let events = self.queue(speech, Some(reply))?;
+        result.await.map_err(|_| Rejected::Stopped)??;
+        Ok(events)
+    }
+
     /// Queues a request without blocking; the receiver yields its audio then exactly one `Done`.
-    pub fn submit(&self, mut speech: Speech) -> Result<UnboundedReceiver<Event>, Rejected> {
+    pub fn submit(&self, speech: Speech) -> Result<UnboundedReceiver<Event>, Rejected> {
+        self.queue(speech, None)
+    }
+
+    fn queue(
+        &self,
+        mut speech: Speech,
+        admission: Option<oneshot::Sender<Result<(), Invalid>>>,
+    ) -> Result<UnboundedReceiver<Event>, Rejected> {
         speech.id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sink, events) = unbounded_channel();
-        match self.tx.try_send(Submission { speech, sink }) {
+        match self.tx.try_send(Submission { speech, sink, admission }) {
             Ok(()) => Ok(events),
             Err(mpsc::TrySendError::Full(_)) => Err(Rejected::Full),
             Err(mpsc::TrySendError::Disconnected(_)) => Err(Rejected::Stopped),

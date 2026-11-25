@@ -17,6 +17,7 @@ use std::path::Path;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use omni_engine::Invalid;
 use serde_json::Value;
 use serde_json::json;
 
@@ -57,11 +58,14 @@ pub struct Voice {
 /// Resolves a speaker and a language name (`auto` lets the model infer it). A
 /// dialect speaker asked for Chinese or `auto` speaks its dialect. VoiceDesign
 /// ignores the speaker name and has no speaker token or dialect override.
-pub fn voice(model: &Model, speaker: &str, language: &str) -> Result<Voice, String> {
+pub fn voice(model: &Model, speaker: &str, language: &str) -> Result<Voice, Invalid> {
     let t = &model.talker_config;
     let (speaker_id, dialect) = match model.tts_model_type {
         ModelType::CustomVoice => {
-            let id = *t.spk_id.get(speaker).ok_or_else(|| format!("unknown speaker `{speaker}`"))?;
+            let id = *t
+                .spk_id
+                .get(speaker)
+                .ok_or_else(|| Invalid { param: "voice", message: format!("unknown speaker `{speaker}`") })?;
             (Some(id), t.spk_is_dialect.get(speaker).and_then(Value::as_str))
         }
         ModelType::VoiceDesign => (None, None),
@@ -73,7 +77,11 @@ pub fn voice(model: &Model, speaker: &str, language: &str) -> Result<Voice, Stri
     };
     let language = match language {
         None => None,
-        Some(l) => Some(*t.codec_language_id.get(l).ok_or_else(|| format!("unknown language `{l}`"))?),
+        Some(l) => Some(
+            *t.codec_language_id
+                .get(l)
+                .ok_or_else(|| Invalid { param: "extra", message: format!("unknown language `{l}`") })?,
+        ),
     };
     Ok(Voice { speaker: speaker_id, language })
 }
@@ -101,6 +109,28 @@ pub fn assemble(model: &Model, voice: Voice, text: &[i32], instruct: Option<&[i3
     p.push(eos, t.codec_pad_id);
     p.push(pad, t.codec_bos_id);
     p
+}
+
+/// Checks the actual assembled positions, including the language and role tokens.
+/// Attribute overflow to the description only when the text would fit on its own.
+pub fn assemble_with_budget(
+    model: &Model,
+    voice: Voice,
+    text: &[i32],
+    instruct: Option<&[i32]>,
+    max_tokens: usize,
+) -> Result<Prompt, Invalid> {
+    let prompt = assemble(model, voice, text, instruct);
+    let total = prompt.len();
+    if total > max_tokens {
+        let input_tokens = total - instruct.map_or(0, <[i32]>::len);
+        let (param, tokens) = if input_tokens > max_tokens { ("input", input_tokens) } else { ("instructions", total) };
+        return Err(Invalid {
+            param,
+            message: format!("{tokens} prompt tokens exceed the per-step limit of {max_tokens}"),
+        });
+    }
+    Ok(prompt)
 }
 
 /// The Qwen2 byte-level BPE the checkpoint ships as `vocab.json` + `merges.txt`.

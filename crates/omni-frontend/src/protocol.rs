@@ -49,7 +49,7 @@ struct Body {
     input: String,
     voice: Voice,
     #[serde(default)]
-    instructions: Option<String>,
+    instructions: Value,
     #[serde(default)]
     response_format: Option<String>,
     #[serde(default)]
@@ -165,6 +165,8 @@ fn framing(name: Option<&str>) -> Result<Framing, ApiError> {
 /// Parses a request body against what the engine serves.
 pub fn parse(bytes: &[u8], info: &EngineInfo) -> Result<(Speech, Delivery), ApiError> {
     let body: Body = serde_json::from_slice(bytes).map_err(|e| ApiError::invalid(None, e.to_string()))?;
+    let instructions = serde_json::from_value(body.instructions)
+        .map_err(|e| ApiError::invalid(Some("instructions"), e.to_string()))?;
     if body.model != info.model {
         return Err(ApiError::model_not_found(&body.model, &info.model));
     }
@@ -176,7 +178,7 @@ pub fn parse(bytes: &[u8], info: &EngineInfo) -> Result<(Speech, Delivery), ApiE
     let draft = Draft {
         input: body.input,
         voice,
-        instructions: body.instructions,
+        instructions,
         speed: body.speed,
         extra: body.extra,
         ref_audio: body.ref_audio.as_deref(),

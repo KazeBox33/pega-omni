@@ -49,6 +49,7 @@ use axum::routing::get;
 use axum::routing::post;
 use axum::serve::ListenerExt;
 use metrics_exporter_prometheus::PrometheusHandle;
+use omni_engine::AdmissionError;
 use omni_engine::Handle;
 use omni_engine::Load;
 use omni_engine::Rejected;
@@ -229,7 +230,7 @@ pub async fn serve(
 async fn speech(State(s): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
     let arrived = Instant::now();
     let engine = s.engines.speech().ok_or_else(|| not_here("speech"))?;
-    submit_speech(engine, protocol::parse(&body, &engine.info), arrived)
+    submit_speech(engine, protocol::parse(&body, &engine.info), arrived).await
 }
 
 async fn speech_with_reference(
@@ -265,10 +266,10 @@ async fn speech_with_reference(
     })
     .await
     .map_err(|e| ApiError::internal(format!("reference audio preparation failed: {e}")))?;
-    submit_speech(engine, parsed, arrived)
+    submit_speech(engine, parsed, arrived).await
 }
 
-fn submit_speech(
+async fn submit_speech(
     engine: &Handle,
     parsed: Result<(Speech, Delivery), ApiError>,
     arrived: Instant,
@@ -276,11 +277,17 @@ fn submit_speech(
     let (speech, delivery) = parsed.inspect_err(|_| {
         metrics::counter!("omni_requests_total", "outcome" => "invalid").increment(1);
     })?;
-    let events = engine.submit(speech).map_err(|e| {
-        metrics::counter!("omni_requests_total", "outcome" => "rejected").increment(1);
-        match e {
-            Rejected::Full => ApiError::overloaded(e.to_string()),
-            Rejected::Stopped => ApiError::unavailable(e.to_string()),
+    let events = engine.admit(speech).await.map_err(|e| match e {
+        AdmissionError::Invalid(invalid) => {
+            metrics::counter!("omni_requests_total", "outcome" => "invalid").increment(1);
+            ApiError::from(invalid)
+        }
+        AdmissionError::Queue(rejected) => {
+            metrics::counter!("omni_requests_total", "outcome" => "rejected").increment(1);
+            match rejected {
+                Rejected::Full => ApiError::overloaded(rejected.to_string()),
+                Rejected::Stopped => ApiError::unavailable(rejected.to_string()),
+            }
         }
     })?;
     let report = move |o: Outcome| record(arrived, o);
