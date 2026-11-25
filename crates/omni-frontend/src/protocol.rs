@@ -3,9 +3,8 @@
 //! The wire format follows OpenAI's API reference. Two deliberate differences:
 //! `response_format` defaults to `wav` (not `mp3`) and only `wav` / `pcm` are
 //! encoded today; the others are refused by name rather than silently
-//! substituted. Model-specific options live in one `extra` object that the
-//! engine declares, never as new top-level fields. Unknown top-level fields are
-//! an error: a typo must not turn into a default.
+//! substituted. Engines can opt into the shared reference audio fields.
+//! Model-specific options live in `extra`. Unknown top-level fields are an error.
 
 use std::collections::BTreeMap;
 
@@ -20,6 +19,8 @@ use omni_engine::Speech;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+
+use crate::reference_audio;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
@@ -62,6 +63,9 @@ struct Body {
     _stream: Option<bool>,
     #[serde(default)]
     extra: BTreeMap<String, Value>,
+    ref_audio: Option<String>,
+    ref_text: Option<String>,
+    x_vector_only_mode: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -169,7 +173,16 @@ pub fn parse(bytes: &[u8], info: &EngineInfo) -> Result<(Speech, Delivery), ApiE
     let voice = match body.voice {
         Voice::Name(v) | Voice::Object { id: v } => v,
     };
-    let draft =
-        Draft { input: body.input, voice, instructions: body.instructions, speed: body.speed, extra: body.extra };
-    Ok((info.check(draft)?, delivery))
+    let draft = Draft {
+        input: body.input,
+        voice,
+        instructions: body.instructions,
+        speed: body.speed,
+        extra: body.extra,
+        ref_audio: body.ref_audio.as_deref(),
+        ref_text: body.ref_text,
+        x_vector_only_mode: body.x_vector_only_mode,
+    };
+    let speech = info.check_with_audio(draft, reference_audio::decode)?;
+    Ok((speech, delivery))
 }

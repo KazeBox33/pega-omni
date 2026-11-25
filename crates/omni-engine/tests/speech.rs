@@ -8,10 +8,11 @@ fn info(designed: bool) -> EngineInfo {
         model: "speech".into(),
         sample_rate: 24_000,
         voices: if designed { Default::default() } else { ["ryan".into()].into() },
-        instructions_required: designed,
         extra: BTreeMap::new(),
         speeds: 1.0..=1.0,
         max_input_chars: 4096,
+        required_instructions_max_chars: designed.then_some(32),
+        reference_audio: None,
     }
 }
 
@@ -40,6 +41,17 @@ fn instruction_driven_speech_ignores_the_sdk_voice_name() {
         let speech = info(true).check(draft).unwrap();
         assert_eq!(speech.instructions.as_deref(), Some(" A low, slow voice. "));
     }
+}
+
+#[test]
+fn voice_description_limit_counts_characters_including_whitespace() {
+    let engine = info(true);
+    let draft = Draft { input: "Hello.".into(), instructions: Some("慢".repeat(32)), ..Default::default() };
+    assert!(engine.check(draft.clone()).is_ok());
+    let over = Draft { instructions: draft.instructions.clone().map(|text| format!("{text} ")), ..draft };
+    let error = engine.check(over).unwrap_err();
+    assert_eq!(error.param, "instructions");
+    assert_eq!(error.message, "33 characters, the limit is 32");
 }
 
 #[test]

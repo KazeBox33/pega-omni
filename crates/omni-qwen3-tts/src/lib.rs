@@ -8,7 +8,6 @@
 mod codec;
 pub mod config;
 pub mod engine;
-pub mod gemm;
 pub mod model;
 pub mod prompt;
 mod talker;

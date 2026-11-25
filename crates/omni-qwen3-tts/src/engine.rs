@@ -40,7 +40,6 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::config::Config;
 use crate::config::ModelType;
 use crate::model::Draw;
 use crate::model::Limits;
@@ -58,20 +57,11 @@ pub struct Options {
     pub kv_gib: f64,
     pub first_chunk_frames: usize,
     pub chunk_frames: usize,
-    /// Optional device-bound M=1 GEMM algorithm profile; heuristic without.
-    pub gemm_algos: Option<PathBuf>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self {
-            max_batch: 64,
-            max_step_tokens: 8192,
-            kv_gib: 16.0,
-            first_chunk_frames: 2,
-            chunk_frames: 8,
-            gemm_algos: None,
-        }
+        Self { max_batch: 64, max_step_tokens: 8192, kv_gib: 16.0, first_chunk_frames: 2, chunk_frames: 8 }
     }
 }
 
@@ -92,7 +82,8 @@ pub fn frame_cap(input_chars: usize, model_max: usize) -> usize {
 
 /// The front end's view: checkpoint-specific voices and instructions, languages,
 /// and a sampling seed. VoiceDesign's voice is entirely in `instructions`.
-pub fn info(config: &Config, name: &str, max_input_chars: usize) -> EngineInfo {
+pub fn info(model: &Model, name: &str, max_input_chars: usize) -> EngineInfo {
+    let config = &model.config;
     let t = &config.model.talker_config;
     let designed = config.model.tts_model_type == ModelType::VoiceDesign;
     let languages = std::iter::once("auto".to_string()).chain(t.codec_language_id.keys().cloned()).collect();
@@ -100,13 +91,14 @@ pub fn info(config: &Config, name: &str, max_input_chars: usize) -> EngineInfo {
         model: name.into(),
         sample_rate: config.sample_rate,
         voices: if designed { Default::default() } else { t.spk_id.keys().cloned().collect() },
-        instructions_required: designed,
         extra: BTreeMap::from([
             ("language".to_string(), Extra::OneOf(languages)),
             ("seed".to_string(), Extra::Integer(0..=i64::MAX)),
         ]),
         speeds: 1.0..=1.0,
         max_input_chars,
+        required_instructions_max_chars: designed.then_some(512),
+        reference_audio: None,
     }
 }
 
@@ -301,9 +293,8 @@ pub fn start(
     let thread = std::thread::Builder::new().name("omni-qwen3-tts".into()).spawn(move || {
         let loaded = (|| {
             let limits = Limits { max_batch: opts.max_batch, max_tokens: opts.max_step_tokens, kv_gib: opts.kv_gib };
-            let model = Model::load(device, &dir, limits, opts.gemm_algos.as_deref())
-                .with_context(|| format!("load {}", dir.display()))?;
-            let (handle, inbox) = omni_engine::channel(info(&model.config, &name, max_input_chars), queue);
+            let model = Model::load(device, &dir, limits).with_context(|| format!("load {}", dir.display()))?;
+            let (handle, inbox) = omni_engine::channel(info(&model, &name, max_input_chars), queue);
             anyhow::Ok((handle, inbox, Engine::new(model, opts)))
         })();
         match loaded {

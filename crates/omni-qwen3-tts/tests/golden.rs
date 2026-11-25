@@ -2,14 +2,11 @@
 //! (`tools/qwen3_tts/golden.py`): tokenizer ids, prompt embeddings,
 //! teacher-forced talker and code-predictor logits, and the decoded waveform,
 //! all through the serving path (`prefill`, `first`, `decode`) with the
-//! recorded frames forced in place of the draws. The same test replays one
-//! stream, then three streams sequentially, so single-row algorithms and mixed
-//! batch sizes are covered without parallel GPU contexts.
+//! recorded frames forced in place of the draws.
 //!
 //! Needs a GPU, `OMNI_QWEN3_TTS_MODEL` (checkpoint directory) and
 //! `OMNI_QWEN3_TTS_GOLDEN` (the golden file); skipped when either is unset.
 
-use std::path::Path;
 use std::path::PathBuf;
 
 use omni_qwen3_tts::config::ModelType;
@@ -44,16 +41,18 @@ impl Golden {
         let bytes = std::fs::read(path).unwrap();
         let (_, meta) = safetensors::SafeTensors::read_metadata(&bytes).unwrap();
         let m = meta.metadata().clone().unwrap();
+        let model_type = match m.get("mode").map(String::as_str) {
+            None | Some("customvoice") => ModelType::CustomVoice,
+            Some("voicedesign") => ModelType::VoiceDesign,
+            Some(mode) => panic!("unsupported golden mode {mode}"),
+        };
         Golden {
             file: File::open(path).unwrap(),
             text: m["text"].clone(),
             speaker: m["speaker"].clone(),
             language: m["language"].clone(),
             instructions: m.get("instructions").cloned(),
-            model_type: m
-                .get("tts_model_type")
-                .map(|kind| serde_json::from_value(serde_json::Value::String(kind.clone())).unwrap())
-                .unwrap_or(ModelType::CustomVoice),
+            model_type,
         }
     }
 
@@ -93,28 +92,23 @@ const LAG: usize = 7;
 #[test]
 fn matches_the_official_run() {
     let Some((dir, golden)) = paths() else { return };
-    for streams in [1, 3] {
-        compare(&dir, &golden, streams);
-    }
-}
-
-fn compare(dir: &Path, golden: &Path, streams: usize) {
-    eprintln!("streams={streams}: replay official golden");
-    let golden = Golden::open(golden);
-    let limits = Limits { max_batch: streams, max_tokens: 1024, kv_gib: 0.5 };
-    let gemm_algos =
-        std::env::var_os("OMNI_QWEN3_TTS_GEMM_ALGOS").filter(|p| !p.is_empty()).map(std::path::PathBuf::from);
-    let mut model = Model::load(0, dir, limits, gemm_algos.as_deref()).unwrap();
+    let golden = Golden::open(&golden);
+    let limits = Limits { max_batch: 3, max_tokens: 1024, kv_gib: 0.5 };
+    let mut model = Model::load(0, &dir, limits).unwrap();
     let config = model.config.clone();
     assert_eq!(config.model.tts_model_type, golden.model_type, "golden checkpoint family");
 
     let text_ids = model.tokenizer.assistant(&golden.text);
     assert_eq!(text_ids, golden.i32("text_ids"), "tokenizer ids");
     let voice = prompt::voice(&config.model, &golden.speaker, &golden.language).unwrap();
-    let instruct = golden.instructions.as_deref().filter(|s| !s.is_empty()).map(|s| model.tokenizer.instruct(s));
-    if golden.instructions.is_some() {
-        assert_eq!(instruct.as_deref().unwrap_or_default(), golden.i32("instruct_ids"), "instruction tokenizer ids");
-    }
+    let instruct = if golden.model_type == ModelType::VoiceDesign {
+        let instructions = golden.instructions.as_deref().expect("VoiceDesign golden needs instructions");
+        let ids = model.tokenizer.instruct(instructions);
+        assert_eq!(ids, golden.i32("instruct_ids"), "instruction tokenizer ids");
+        Some(ids)
+    } else {
+        None
+    };
     let prompt = prompt::assemble(&config.model, voice, &text_ids, instruct.as_deref());
     let (embed_shape, embeds) = golden.f32("prefill_embeds");
     assert_eq!(prompt.len(), embed_shape[0], "prompt length");
@@ -129,21 +123,19 @@ fn compare(dir: &Path, golden: &Path, streams: usize) {
     assert_eq!(talker_logits.len(), (n + 1) * vocab, "reference must include the terminal EOS-step logits");
     assert_eq!(predictor_logits.len(), n * (GROUPS - 1) * p_vocab, "reference predictor logits per frame");
 
-    let mut seqs: Vec<Seq> = (0..streams).map(|_| model.open(prompt.len(), n + 1).unwrap().unwrap()).collect();
-    let starts = if streams == 1 { vec![0] } else { vec![0, 0, LAG] };
-    let lag = if streams == 1 { 0 } else { LAG };
-    // The reference sampled EOS with its own RNG. Force that final decision too;
-    // its raw talker logits are still compared below, independently of sampling.
+    let mut seqs: Vec<Seq> = (0..3).map(|_| model.open(prompt.len(), n + 1).unwrap().unwrap()).collect();
+    let starts = [0, 0, LAG];
+    // Force the recorded EOS independently of sampling, just like the audio codes.
     let mut end = [0; GROUPS];
-    end[0] = config.model.talker_config.codec_eos_token_id;
+    end[0] = t.codec_eos_token_id;
     let draw = |t: usize| Draw { uniforms: [0.5; GROUPS], force: Some(frames.get(t).copied().unwrap_or(end)) };
     let mut ours_talker = Vec::new();
     let mut ours_predictor = Vec::new();
-    let mut wav = vec![Vec::new(); streams];
-    for step in 0..=n + lag {
+    let mut wav = vec![Vec::new(); 3];
+    for step in 0..=n + LAG {
         let at: Vec<Option<usize>> = starts.iter().map(|&s| step.checked_sub(s).filter(|&t| t <= n)).collect();
         for fresh in [true, false] {
-            let who: Vec<usize> = (0..streams).filter(|&k| at[k].is_some_and(|t| (t == 0) == fresh)).collect();
+            let who: Vec<usize> = (0..3).filter(|&k| at[k].is_some_and(|t| (t == 0) == fresh)).collect();
             if who.is_empty() {
                 continue;
             }
@@ -167,7 +159,7 @@ fn compare(dir: &Path, golden: &Path, streams: usize) {
                 let t = at[0].unwrap();
                 if t == 0 {
                     let (worst, _) = agreement(&model.embeds(prompt.len()).unwrap(), &embeds, h);
-                    eprintln!("streams={streams}: prompt embeddings: worst cosine {worst:.6}");
+                    eprintln!("prompt embeddings: worst cosine {worst:.6}");
                     assert!(worst > 0.999, "prompt embeddings diverge: worst cosine {worst}");
                 }
                 ours_talker.extend(model.talker_logits(0).unwrap());
@@ -179,20 +171,18 @@ fn compare(dir: &Path, golden: &Path, streams: usize) {
     }
 
     let (worst, agree) = agreement(&ours_talker, &talker_logits, vocab);
-    eprintln!("streams={streams}: talker logits: worst cosine {worst:.5}, argmax agreement {agree:.3}");
+    eprintln!("talker logits: worst cosine {worst:.5}, argmax agreement {agree:.3}");
     assert!(worst > 0.999 && agree > 0.95, "talker logits diverge");
     let (worst, agree) = agreement(&ours_predictor, &predictor_logits, p_vocab);
-    eprintln!("streams={streams}: predictor logits: worst cosine {worst:.5}, argmax agreement {agree:.3}");
+    eprintln!("predictor logits: worst cosine {worst:.5}, argmax agreement {agree:.3}");
     assert!(worst > 0.998 && agree > 0.9, "predictor logits diverge");
 
     let (_, reference) = golden.f32("wav");
-    if streams == 3 {
-        assert_eq!(wav[0], wav[1], "two streams of the same frames in one batch decode differently");
-    }
-    for (k, audio) in wav.iter().enumerate() {
+    assert_eq!(wav[0], wav[1], "two streams of the same frames in one batch decode differently");
+    for (name, audio) in [("streamed waveform", &wav[0]), ("lagging stream", &wav[2])] {
         let snr = snr(audio, &reference);
-        eprintln!("streams={streams} stream={k}: snr {snr:.2} dB");
-        assert!(snr > 30.0, "streams={streams} stream={k} snr {snr:.2} dB");
+        eprintln!("{name}: snr {snr:.2} dB");
+        assert!(snr > 30.0, "{name} snr {snr:.2} dB");
     }
 }
 

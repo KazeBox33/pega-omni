@@ -74,6 +74,22 @@ jobs:
           cat server.log; exit 1
       - name: Official openai SDK conforms
         run: uv run --with openai tools/openai_sdk_check.py --base-url http://127.0.0.1:8000/v1
+      - name: Start the simulated engine with reference audio
+        run: |
+          target/release/pega-omni sim --reference-audio --listen 127.0.0.1:8003 > server-reference.log 2>&1 &
+          for _ in $(seq 50); do curl -sf 127.0.0.1:8003/health && exit 0; sleep 0.2; done
+          cat server-reference.log; exit 1
+      - name: Official openai SDK conforms with reference audio
+        run: uv run --with openai tools/openai_sdk_check.py --base-url http://127.0.0.1:8003/v1 --reference-audio
+      - name: Start the simulated engine with required voice descriptions
+        run: |
+          target/release/pega-omni sim --instructions-required --listen 127.0.0.1:8004 > server-instructions.log 2>&1 &
+          for _ in $(seq 50); do curl -sf 127.0.0.1:8004/health && exit 0; sleep 0.2; done
+          cat server-instructions.log; exit 1
+      - name: Official openai SDK conforms with required voice descriptions
+        run: >-
+          uv run --with openai tools/openai_sdk_check.py --base-url http://127.0.0.1:8004/v1
+          --instructions 'A low, slow voice.'
       - name: Start the simulated image engine
         run: |
           target/release/pega-omni sim-image --listen 127.0.0.1:8002 > server-image.log 2>&1 &

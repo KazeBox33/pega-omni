@@ -27,9 +27,9 @@ sessions in one CUDA graph per tick ([docs/duplex.md](docs/duplex.md)).
 
 The repository holds the serving front end, the engine contracts, CPU-only
 simulated engines used to load-test the front end, and four GPU engines:
-Qwen3-TTS-12Hz-1.7B CustomVoice and VoiceDesign ([docs/qwen3-tts.md](docs/qwen3-tts.md))
-and Higgs TTS 3 ([docs/higgs-audio.md](docs/higgs-audio.md)) for speech,
-NVIDIA PersonaPlex-7B ([docs/personaplex.md](docs/personaplex.md))
+Qwen3-TTS-12Hz-1.7B CustomVoice and VoiceDesign ([docs/qwen3-tts.md](docs/qwen3-tts.md)) and
+Higgs TTS 3 ([docs/higgs-audio.md](docs/higgs-audio.md)) for speech, NVIDIA
+PersonaPlex-7B ([docs/personaplex.md](docs/personaplex.md))
 for full duplex: **128 concurrent live sessions on one GB300 with no playback
 stall**, and HiDream-O1-Image ([docs/hidream-o1.md](docs/hidream-o1.md)), a
 pixel-space diffusion transformer, for OpenAI's `POST /v1/images/generations`.
@@ -55,17 +55,9 @@ curl -s localhost:8000/v1/audio/speech -H 'content-type: application/json' \
        "extra":{"language":"english"}}' -o hello.wav
 ```
 
-VoiceDesign uses the same subcommand with its own checkpoint. Describe the
-voice in `instructions`; `voice` is a required SDK field but is ignored by this
-model, which advertises no preset voices:
-
-```bash
-target/release/pega-omni qwen3-tts --model-path Qwen3-TTS-12Hz-1.7B-VoiceDesign
-
-curl -s localhost:8000/v1/audio/speech -H 'content-type: application/json' \
-  -d '{"model":"Qwen3-TTS-12Hz-1.7B-VoiceDesign","input":"Hello from pega-omni.","voice":"alloy",
-       "instructions":"A low, slow, middle-aged male voice.","extra":{"language":"english"}}' -o designed.wav
-```
+To describe the voice in natural language, use the
+`Qwen3-TTS-12Hz-1.7B-VoiceDesign` checkpoint with the same subcommand and pass
+`instructions` in the request. See the [VoiceDesign example](docs/qwen3-tts.md#voicedesign).
 
 Higgs TTS 3 (4B) serves the same route; control tags such as `<|emotion:elation|>` go inside
 `input`:
@@ -143,6 +135,36 @@ differs from OpenAI, it says so instead of guessing:
 - Images come back as base64 PNG once every picture is done; `response_format:
   url`, other `output_format`s and `stream: true` are refused by name, and
   `seed` goes in `extra`. `pega-omni sim-image` serves an image simulator.
+
+### Reference audio
+
+Speech engines can opt into three top-level request fields:
+
+| Field | Accepted value |
+|---|---|
+| `ref_audio` | Required `data:audio/wav;base64,...` URI with standard Base64 and a complete PCM16 WAV |
+| `x_vector_only_mode` | Boolean. `true` uses only the audio. `false` or omission uses both audio and transcript |
+| `ref_text` | Nonblank transcript for audio and transcript mode. Ignored in audio-only mode |
+
+`null` is treated like omission for these fields.
+
+WAV sources may have one or two channels at 16, 24, 44.1, or 48 kHz. The
+server checks clip duration at the source rate, mixes to mono, and resamples
+to the engine's reference input rate. `voice` is still required and can be a
+placeholder when the server lists no preset voices. The reference route
+allows up to 60 seconds to read a request body of at most 8 MiB. A read
+timeout returns `408`. Once the body arrives, at most four requests can
+be prepared on blocking workers. A full conversion pool returns `429`.
+
+`pega-omni sim --reference-audio` accepts both modes with 1–30 second clips
+and a 24 kHz reference input rate. The SDK check sends the reference fields
+in `extra_body` and exercises both modes against the running server:
+
+```bash
+pega-omni sim --reference-audio --listen 127.0.0.1:8000
+# In another terminal:
+uv run --with openai tools/openai_sdk_check.py --reference-audio
+```
 
 ## Layout
 
