@@ -270,17 +270,26 @@ copies back (codes and PCM); the only other launches are the eager prefills.
 
 ## CustomVoice regression with VoiceDesign
 
-On 2026-10-27, a same-session `omni-bench` A/B on one RTX 5090 compared the
-upstream base `dfdd530e7e4c6515d6934faeb2c25ed80b03d720` with the initial
-VoiceDesign implementation using default GEMM selection. Both served the
-same CustomVoice checkpoint with `ryan` and identical English prompts and
-instructions. Three alternating pairs of 96 requests per concurrency completed
-all 1,152 requests.
+On 2026-11-25, a same-session `omni-bench` A/B on one RTX 5090 compared
+`main` (`de38d9b`) with the VoiceDesign revision (`f2d4bfc`). Both used
+CUDA 13.0, default GEMM selection and the same CustomVoice checkpoint
+(`0c0e3051`). The server ran on CPU cores 52–67 and the client on 68–71.
+Both served `ryan` with the same eleven English prompts and a fixed request
+seed. The server batch limit was 4 with a 4,096-token step budget and 2 GiB KV.
+Each timed run followed 12 warmup requests. All 1,152 measured requests
+completed across three alternating pairs of 96 requests per arm and concurrency.
 
-| Concurrency | Audio throughput ratio (candidate/base), median [min, max] | Mean audio duration ratio |
-|---:|---:|---:|
-| 1 | 1.00040 [0.99980, 1.00066] | 1.00000 |
-| 4 | 1.00765 [1.00525, 1.00808] | 1.00477 |
+| Concurrency | Audio throughput, main / revision (audio-s/s) | Paired throughput ratio (revision/main), median [min, max] | First PCM p50, main / revision |
+|---:|---:|---:|---:|
+| 1 | 12.99 / 12.97 | 0.9986 [0.9983, 1.0003] | 12.89 / 12.89 ms |
+| 4 | 36.94 / 37.44 | 1.0160 [0.9886, 1.0269] | 30.00 / 30.03 ms |
+
+Per-arm figures are medians across the three runs. The paired audio duration
+ratios were 1.0000 at concurrency 1 and 1.0036 at concurrency 4. Throughput and
+median first-audio latency stayed close. The first-PCM p99 was 13.57 / 16.43 ms
+at concurrency 1 and 36.99 / 38.02 ms at concurrency 4. End-to-end p99 was
+1.75 / 1.75 s and 2.09 / 2.24 s, respectively. Each p99 estimate uses 96
+requests per run and is sensitive to the slowest requests.
 
 # PersonaPlex live sessions
 

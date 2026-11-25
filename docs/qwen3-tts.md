@@ -56,12 +56,27 @@ codec frames, and the CustomVoice checkpoint. The test compares tokenizer
 IDs, prompt embeddings, logits with the reference audio codes forced, and
 waveform SNR against the official continuous decoder.
 
-In an initial RTX 5090 spot check (2026-10-27), multilingual Whisper small
-transcribed six served English and Chinese clips (short, medium and long in
-each language) with zero English word errors over 78 words and zero Chinese
-character errors over 188 characters. This measures intelligibility in the
-sampled clips. See [bench.md](bench.md#customvoice-regression-with-voicedesign)
-for the separate CustomVoice regression check.
+On 2026-11-25, the default build (`f2d4bfc`, CUDA 13.0, RTX 5090) passed
+all four replays against fresh recordings from the pinned Qwen3-TTS package
+with PyTorch 2.11.0+cu130. Each replay uses two lockstep streams and one
+stream that starts seven frames later.
+
+| Checkpoint / case | Codec frames | Lockstep waveform SNR | Late stream waveform SNR |
+|---|---:|---:|---:|
+| VoiceDesign English | 73 | 33.71 dB | 33.86 dB |
+| VoiceDesign Chinese | 93 | 32.62 dB | 32.42 dB |
+| VoiceDesign long English | 366 | 33.37 dB | 33.04 dB |
+| CustomVoice English (`ryan`) | 75 | 36.09 dB | 36.09 dB |
+
+The official OpenAI Python SDK 3.37.0 passed against the GPU server, covering
+WAV, PCM, SSE, model and voice metadata, and invalid descriptions. In an
+intelligibility spot check, multilingual Whisper small transcribed six served
+clips (short, medium and long in each language). Its transcripts differed by
+1 of 65 English words (singular versus plural) and 13 of 112 Chinese characters
+before script normalization. Twelve of the Chinese differences are
+simplified/traditional variants and one is a word choice. See
+[bench.md](bench.md#customvoice-regression-with-voicedesign) for the separate
+CustomVoice regression check.
 
 ## Programs
 
