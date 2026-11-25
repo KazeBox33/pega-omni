@@ -125,10 +125,14 @@ fn matches_the_official_run() {
 
     let mut seqs: Vec<Seq> = (0..3).map(|_| model.open(prompt.len(), n + 1).unwrap().unwrap()).collect();
     let starts = [0, 0, LAG];
-    // Force the recorded EOS independently of sampling, just like the audio codes.
-    let mut end = [0; GROUPS];
-    end[0] = t.codec_eos_token_id;
-    let draw = |t: usize| Draw { uniforms: [0.5; GROUPS], force: Some(frames.get(t).copied().unwrap_or(end)) };
+    // CustomVoice's regression fixture draws EOS at u=0.5. VoiceDesign may
+    // end on a different draw, so replay its EOS and compare the raw logits.
+    let forced_end = (golden.model_type == ModelType::VoiceDesign).then(|| {
+        let mut end = [0; GROUPS];
+        end[0] = t.codec_eos_token_id;
+        end
+    });
+    let draw = |t: usize| Draw { uniforms: [0.5; GROUPS], force: frames.get(t).copied().or(forced_end) };
     let mut ours_talker = Vec::new();
     let mut ours_predictor = Vec::new();
     let mut wav = vec![Vec::new(); 3];

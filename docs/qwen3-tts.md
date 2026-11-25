@@ -11,11 +11,14 @@ voice-clone fixtures prepared for subsequent Base support.
 
 ## VoiceDesign
 
-Start `pega-omni qwen3-tts --model-path <Qwen3-TTS-12Hz-1.7B-VoiceDesign>` to
-serve the VoiceDesign checkpoint. Describe the voice in `instructions` using
+Start `pega-omni qwen3-tts --model-path <checkpoint> --model Qwen3-TTS-12Hz-1.7B-VoiceDesign`
+to serve the VoiceDesign checkpoint. Describe the voice in `instructions` using
 1–512 characters and at least one non-whitespace character. Invalid
 descriptions return HTTP 400 with `param: "instructions"`. The checkpoint
 advertises no preset voices and ignores the `voice` argument.
+`--max-step-tokens` caps the complete tokenized prompt. HTTP 400 names
+`input` if the text and its template already exceed the limit, or
+`instructions` if adding the description crosses it.
 
 ```python
 from openai import OpenAI
@@ -39,27 +42,55 @@ Both checkpoints use the same `prefill`, `first` and `decode` programs.
 
 ### Validation
 
-```bash
-uv run tools/qwen3_tts/golden.py --model "$DESIGN_MODEL" --mode voicedesign \
-  --text 'The quick brown fox jumps over the lazy dog.' --language english \
-  --instructions 'A low, slow, middle-aged male voice.' --out design-en.safetensors
-OMNI_QWEN3_TTS_MODEL="$DESIGN_MODEL" OMNI_QWEN3_TTS_GOLDEN="$PWD/design-en.safetensors" \
-  cargo test --release --locked -p omni-qwen3-tts --test golden -- --nocapture
+To reproduce the four RTX 5090 cases, run the following from the repository
+root on a CUDA machine with `hf`, `uv` and Cargo installed.
 
-uv run --with openai tools/openai_sdk_check.py \
-  --model Qwen3-TTS-12Hz-1.7B-VoiceDesign \
-  --instructions 'A low, slow, middle-aged male voice.' --extra '{"language":"english"}'
+```bash
+set -e
+export CUDA_VISIBLE_DEVICES=0 OMNI_CUDA_ARCH=120  # RTX 5090
+DESIGN_MODEL=$(hf download Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign --revision 5ecdb67327fd37bb2e042aab12ff7391903235d3)
+CUSTOM_MODEL=$(hf download Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice --revision 0c0e3051f131929182e2c023b9537f8b1c68adfe)
+goldens=$(mktemp -d)
+
+record_and_replay() {
+  local fixture="$goldens/$1.safetensors" model="$2"
+  shift 2
+  uv run --with 'transformers==4.57.3' --with 'accelerate==1.12.0' \
+    tools/qwen3_tts/golden.py --model "$model" --out "$fixture" --seed 0 "$@"
+  OMNI_QWEN3_TTS_MODEL="$model" OMNI_QWEN3_TTS_GOLDEN="$fixture" \
+    cargo test --release --locked -p omni-qwen3-tts --test golden -- --nocapture
+}
+
+english='The quick brown fox jumps over the lazy dog, then naps in the warm afternoon sun.'
+description='A calm, clear, middle-aged male voice, speaking at a natural pace.'
+long='This morning, the research team gathered to review the latest experiment.'
+long+=' They compared the results carefully, discussed several possible explanations, and agreed to repeat the measurement under the same conditions.'
+long+=' After lunch, they prepared a short report describing what they had learned and which questions still needed more evidence.'
+long+=' Everyone agreed that careful records would help other people understand and reproduce the results.'
+record_and_replay design-en "$DESIGN_MODEL" --mode voicedesign --language english \
+  --text "$english" --instructions "$description"
+record_and_replay design-zh "$DESIGN_MODEL" --mode voicedesign --language chinese \
+  --text '你好，欢迎一起学习这个项目。我们会一步一步检查实验结果，确认声音清晰，内容完整。' \
+  --instructions '沉稳清晰的中年男声，用自然的语速说普通话。'
+record_and_replay design-long "$DESIGN_MODEL" --mode voicedesign --language english \
+  --text "$long" \
+  --instructions 'A calm and clear female voice speaking at a natural pace.' --min-total-frames 301
+record_and_replay custom-en "$CUSTOM_MODEL" --mode customvoice --language english \
+  --text "$english" --speaker ryan
 ```
 
-Repeat the reference replay for Chinese, English long enough to exceed 300
-codec frames, and the CustomVoice checkpoint. The test compares tokenizer
-IDs, prompt embeddings, logits with the reference audio codes forced, and
-waveform SNR against the official continuous decoder.
+The replay compares tokenizer IDs, prompt embeddings, raw logits (including
+the terminal talker step), and waveform SNR against the official continuous
+decoder. It forces the recorded audio codes for all four cases. On the final
+step the CustomVoice regression checks that the serving sampler draws EOS at
+`u=0.5`. The VoiceDesign cases force the official terminal token.
 
-On 2026-11-25, the default build (`f2d4bfc`, CUDA 13.0, RTX 5090) passed
-all four replays against fresh recordings from the pinned Qwen3-TTS package
-with PyTorch 2.11.0+cu130. Each replay uses two lockstep streams and one
-stream that starts seven frames later.
+On 2026-11-25, `f2d4bfc` passed all four replays on an RTX 5090 with nvcc
+13.0.88. The recorder used Qwen3-TTS at `022e286b`, PyTorch 2.11.0+cu130,
+BF16 and SDPA. Each replay used two lockstep streams and one stream that
+started seven frames later. That revision forced all four terminal tokens.
+A CPU replay of the final reference logits at `u=0.5` drew EOS for CustomVoice
+English and an audio code for VoiceDesign Chinese.
 
 | Checkpoint / case | Codec frames | Lockstep waveform SNR | Late stream waveform SNR |
 |---|---:|---:|---:|
@@ -67,6 +98,15 @@ stream that starts seven frames later.
 | VoiceDesign Chinese | 93 | 32.62 dB | 32.42 dB |
 | VoiceDesign long English | 366 | 33.37 dB | 33.04 dB |
 | CustomVoice English (`ryan`) | 75 | 36.09 dB | 36.09 dB |
+
+With the VoiceDesign server from the example above running on port 8000, run
+the SDK check against its advertised model name:
+
+```bash
+uv run --with 'openai==3.37.0' tools/openai_sdk_check.py \
+  --model Qwen3-TTS-12Hz-1.7B-VoiceDesign --instructions "$description" \
+  --extra '{"language":"english","seed":7}'
+```
 
 The official OpenAI Python SDK 3.37.0 passed against the GPU server, covering
 WAV, PCM, SSE, model and voice metadata, and invalid descriptions. In an
